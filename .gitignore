@@ -1,3 +1,23 @@
+# --- Project specific ---
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local editor junk
+.vscode/
+.idea/
+.DS_Store
+
+# Local logs (if you create any)
+logs/
+*.log
+
+# Python bytecode anywhere
+**/__pycache__/
+
+# ---- Python default ----
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
