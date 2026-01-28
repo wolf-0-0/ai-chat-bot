@@ -1,27 +1,80 @@
-def build_prompt(user_text: str, user_name: str, chat_type: str | None, history: list[tuple[str, str]]) -> str:
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Iterable
+
+@dataclass(frozen=True)
+class ChatContext:
+    chat_id: str
+    chat_type: str
+    user_name: str
+    user_id: int | None = None
+    locale: str | None = None
+
+@dataclass(frozen=True)
+class MemoryItem:
+    kind: str          # e.g. "fact", "preference", "task", "summary"
+    content: str       # human-readable memory text
+    weight: int = 1    # optional: prioritize what stays when trimming
+
+def build_prompt(
+    *,
+    chat: ChatContext,
+    user_text: str,
+    core_behavior: str,
+    memory: Iterable[MemoryItem] = (),
+    history: list[tuple[str, str]] = (),
+    max_chars: int = 18_000,
+) -> str:
     """
-    history = list of (user_text, assistant_text) pairs, oldest -> newest
+    Assemble a single prompt string for /api/generate.
+    The caller supplies core_behavior (file contents), memory (db), history (db).
     """
 
-    system = (
-        "You are a helpful assistant.\n"
-        "Rules:\n"
-        "- Be clear and brief.\n"
-        "- If you don't know, say so.\n"
+    sections: list[str] = []
+
+    # 1) Core behavior (static, versioned)
+    core_behavior = (core_behavior or "").strip()
+    if core_behavior:
+        sections.append("### CORE BEHAVIOR\n" + core_behavior)
+
+    # 2) Chat context (light metadata, useful for behavior)
+    sections.append(
+        "### CHAT CONTEXT\n"
+        f"- chat_id: {chat.chat_id}\n"
+        f"- chat_type: {chat.chat_type}\n"
+        f"- user_name: {chat.user_name}\n"
+        + (f"- user_id: {chat.user_id}\n" if chat.user_id is not None else "")
+        + (f"- locale: {chat.locale}\n" if chat.locale else "")
     )
 
-    header = f"User: {user_name}\nChatType: {chat_type or 'unknown'}\n"
+    # 3) Memory (db)
+    mem_lines: list[str] = []
+    for m in memory:
+        c = (m.content or "").strip()
+        if not c:
+            continue
+        mem_lines.append(f"- [{m.kind}] {c}")
+    if mem_lines:
+        sections.append("### MEMORY\n" + "\n".join(mem_lines))
 
-    # Build a compact transcript
-    transcript_lines = []
+    # 4) Conversation so far (recent turns)
+    hist_lines: list[str] = []
     for u, a in history:
-        transcript_lines.append(f"User: {u}")
-        transcript_lines.append(f"Assistant: {a}")
+        u = (u or "").strip()
+        a = (a or "").strip()
+        if not u or not a:
+            continue
+        hist_lines.append(f"User: {u}\nAssistant: {a}")
+    if hist_lines:
+        sections.append("### CONVERSATION SO FAR\n" + "\n\n".join(hist_lines))
 
-    transcript = "\n".join(transcript_lines).strip()
-    if transcript:
-        transcript = "Conversation so far:\n" + transcript + "\n"
+    # 5) New message
+    sections.append("### NEW MESSAGE\n" f"User: {user_text.strip()}\nAssistant:")
 
-    new_msg = f"User: {user_text}\nAssistant:"
+    prompt = "\n\n".join(sections).strip()
 
-    return system + "\n" + header + "\n" + transcript + new_msg
+    # Hard trim (simple, effective). Later we can do smarter “drop lowest weight memory first”.
+    if len(prompt) > max_chars:
+        prompt = prompt[-max_chars:]
+
+    return prompt
