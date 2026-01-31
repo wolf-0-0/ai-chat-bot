@@ -1,14 +1,27 @@
+"""Telegram adapter (event-log DB + JSON contract LLM)."""
+
+from __future__ import annotations
+
 import json
+import logging
+
 from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
-from ai_chat_bot.core.config import BOT_TOKEN
-from ai_chat_bot.infra.db.sqlite import log_message
+from ai_chat_bot.core.config import settings, require_bot_token
 from ai_chat_bot.app.graph import build_graph
+from ai_chat_bot.infra.db.sqlite import (
+    upsert_chat,
+    upsert_telegram_user,
+    insert_message,
+    update_user_description,
+)
 
+log = logging.getLogger(__name__)
 _app_graph = build_graph()
 
-async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -16,54 +29,90 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not chat or not user or not msg.text:
         return
 
-    # --- RAW TELEGRAM UPDATE (for debugging/learning) ---
     raw = update.to_dict()
-    raw_msg = raw.get("message") or {}
-    raw_chat = raw_msg.get("chat") or {}
-    raw_from = raw_msg.get("from") or {}
+    if settings.DEBUG_TELEGRAM_UPDATES:
+        log.debug("TELEGRAM RAW UPDATE: %s", json.dumps(raw, ensure_ascii=False))
 
-    print("=== TELEGRAM RAW UPDATE ===")
-    print(json.dumps(raw, ensure_ascii=False, indent=2))
+    chat_id = int(chat.id)
+    user_id = int(user.id)
+    chat_type = getattr(chat, "type", None) or "unknown"
+    title = getattr(chat, "title", None)
 
-    state = {
-        "chat_id": str(chat.id),
-        "user_name": user.username or user.first_name or "unknown",
-        "user_text": msg.text,
-        "assistant_text": "",
-    }
-    print("=== STATE ===")
-    print(json.dumps(state, ensure_ascii=False, indent=2))
-    out = _app_graph.invoke(state)
-    print("=== OUT ===")
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-    print("=== END ===")
-    reply = out.get("assistant_text", "") or "(no response)"
+    # 0) Upsert chat + user (best effort, but should not crash bot)
+    try:
+        upsert_chat(telegram_chat_id=chat_id, chat_type=chat_type, title=title)
+        upsert_telegram_user(
+            telegram_user_id=user_id,
+            is_bot=user.is_bot,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            language_code=getattr(user, "language_code", None),
+        )
+    except Exception:
+        log.exception("DB upsert failed (ignored).")
 
-    log_message(
-    chat_id=str(raw_chat.get("id")),
-    user_name=(raw_from.get("first_name") or "unknown"),
-    user_text=raw_msg.get("text") or "",
-    assistant_text=reply,
+    # 1) Insert incoming user event
+    try:
+        insert_message(
+            update_id=raw.get("update_id"),
+            telegram_message_id=msg.message_id,
+            chat_telegram_id=chat_id,
+            from_telegram_user_id=user_id,
+            role="user",
+            text=msg.text,
+            telegram_date=getattr(msg, "date", None).timestamp() if getattr(msg, "date", None) else raw.get("message", {}).get("date"),
+        )
+    except Exception:
+        log.exception("DB insert user message failed (ignored).")
 
-    update_id=raw.get("update_id"),
-    message_id=raw_msg.get("message_id"),
-    date_unix=raw_msg.get("date"),
+    # 2) Invoke graph
+    try:
+        out = _app_graph.invoke(
+            {
+                "telegram_chat_id": chat_id,
+                "telegram_user_id": user_id,
+                "user_text": msg.text,
+            }
+        )
+        
+        log.debug(json.dumps(out, ensure_ascii=False, indent=2))
 
-    chat_type=raw_chat.get("type"),
-    chat_first_name=raw_chat.get("first_name"),
-    chat_last_name=raw_chat.get("last_name"),
+        reply = (out.get("assistant_text") or "").strip() or "(no response)"
+        new_desc = (out.get("updated_user_description") or "").strip()
+    except Exception:
+        log.exception("Graph invoke failed")
+        reply = "Sorry, internal error."
+        new_desc = ""
 
-    from_id=raw_from.get("id"),
-    from_first_name=raw_from.get("first_name"),
-    from_last_name=raw_from.get("last_name"),
-    from_is_bot=raw_from.get("is_bot"),
-    from_language_code=raw_from.get("language_code"),
+    # 3) Reply (critical path)
+    sent = await msg.reply_text(reply)
 
-    raw_json=raw,
-)
-    await msg.reply_text(reply)
+    # 4) Insert assistant event
+    try:
+        insert_message(
+            update_id=None,
+            telegram_message_id=getattr(sent, "message_id", None),
+            chat_telegram_id=chat_id,
+            from_telegram_user_id=None,
+            role="assistant",
+            text=reply,
+            telegram_date=getattr(sent, "date", None).timestamp() if getattr(sent, "date", None) else None,
+        )
+    except Exception:
+        log.exception("DB insert assistant message failed (ignored).")
 
-def run_bot():
-    app = Application.builder().token(BOT_TOKEN).build()
+    # 5) Replace user_description in DB (AI decides)
+    if new_desc is not None:
+        try:
+            update_user_description(user_id, new_desc)
+        except Exception:
+            log.exception("DB update user_description failed (ignored).")
+
+
+def run_bot() -> None:
+    require_bot_token()
+
+    app = Application.builder().token(settings.BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    app.run_polling(close_loop=False)
+    app.run_polling(timeout=50, poll_interval=0.0, close_loop=False)
+

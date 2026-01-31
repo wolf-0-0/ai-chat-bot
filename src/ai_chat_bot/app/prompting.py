@@ -1,27 +1,33 @@
-def build_prompt(user_text: str, user_name: str, chat_type: str | None, history: list[tuple[str, str]]) -> str:
-    """
-    history = list of (user_text, assistant_text) pairs, oldest -> newest
-    """
+from __future__ import annotations
 
-    system = (
-        "You are a helpful assistant.\n"
-        "Rules:\n"
-        "- Be clear and brief.\n"
-        "- If you don't know, say so.\n"
-    )
+from datetime import datetime, timezone
+from typing import Any
 
-    header = f"User: {user_name}\nChatType: {chat_type or 'unknown'}\n"
 
-    # Build a compact transcript
-    transcript_lines = []
-    for u, a in history:
-        transcript_lines.append(f"User: {u}")
-        transcript_lines.append(f"Assistant: {a}")
+def iso_now_utc() -> str:
+    # You want Europe/Brussels in meta, but "now" as ISO is fine in UTC.
+    return datetime.now(timezone.utc).isoformat()
 
-    transcript = "\n".join(transcript_lines).strip()
-    if transcript:
-        transcript = "Conversation so far:\n" + transcript + "\n"
 
-    new_msg = f"User: {user_text}\nAssistant:"
-
-    return system + "\n" + header + "\n" + transcript + new_msg
+def build_llm_request(
+    *,
+    schema_version: str,
+    assistant_name: str,
+    system_rules: str,
+    timezone_name: str,
+    user_description: str,
+    recent_events: list[dict[str, str]],
+    user_message: str,
+) -> dict[str, Any]:
+    return {
+        "meta": {
+            "schema_version": schema_version,
+            "assistant_name": assistant_name,
+            "system_rules": system_rules,
+            "timezone": timezone_name,
+            "now": iso_now_utc(),
+        },
+        "user_description": user_description or "",
+        "recent_events": recent_events or [],
+        "user_message": user_message or "",
+    }
