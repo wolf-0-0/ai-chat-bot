@@ -7,8 +7,9 @@ from langgraph.graph import StateGraph, START, END
 
 from ai_chat_bot.core.config import settings, load_system_rules
 from ai_chat_bot.app.prompting import build_llm_request
-from ai_chat_bot.infra.llm.ollama_client import generate_contract
 from ai_chat_bot.infra.db.sqlite import fetch_recent_events, get_user_description
+from ai_chat_bot.infra.llm.client_factory import generate_contract
+
 
 
 class State(TypedDict, total=False):

@@ -30,6 +30,19 @@ class Settings:
     TIMEZONE: str = os.getenv("TIMEZONE", "Europe/Brussels")
     SCHEMA_VERSION: str = os.getenv("SCHEMA_VERSION", "1.0")
 
+    # LLM backend switching
+    # - LLM_BACKEND decides the runtime.
+    # - ollama: local Ollama (/api/generate)
+    # - openai_compat: any OpenAI-compatible provider (Groq, OpenRouter, etc.)
+    LLM_BACKEND: str = os.getenv("LLM_BACKEND", "ollama")
+
+    # OpenAI-compatible provider settings (only used when LLM_BACKEND=openai_compat)
+    OPENAI_COMPAT_BASE_URL: str = os.getenv("OPENAI_COMPAT_BASE_URL", "https://api.groq.com/openai/v1")
+    OPENAI_COMPAT_API_KEY: str = os.getenv("OPENAI_COMPAT_API_KEY", os.getenv("GROQ_API_KEY", ""))
+    OPENAI_COMPAT_MODEL: str = os.getenv("OPENAI_COMPAT_MODEL", "llama-3.3-70b-versatile")
+    OPENAI_COMPAT_TIMEOUT_S: int = int(os.getenv("OPENAI_COMPAT_TIMEOUT_S", "120"))
+
+
     # Hard-coded system rules markdown (forces JSON output)
     SYSTEM_RULES_PATH: str = os.getenv("SYSTEM_RULES_PATH", "./data/core_behavior.md")
 
