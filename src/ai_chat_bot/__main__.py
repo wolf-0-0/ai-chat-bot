@@ -3,6 +3,8 @@ ai_chat_bot entrypoint.
 
 Run:
     python -m ai_chat_bot
+    or
+    PYTHONPATH=src python -m ai_chat_bot
 
 Does:
 - setup logging
